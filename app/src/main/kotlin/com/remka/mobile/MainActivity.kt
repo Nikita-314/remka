@@ -165,7 +165,8 @@ private fun RemkaApp() {
                     events = events.filter { event -> event.vehicleId == selectedVehicle.id },
                     plans = plans.filter { plan -> plan.vehicleId == selectedVehicle.id },
                     onBack = { screen = RemkaScreen.VehicleList },
-                    onAddEventClick = { screen = RemkaScreen.AddEvent }
+                    onAddEventClick = { screen = RemkaScreen.AddEvent },
+                    onAddPlanClick = { screen = RemkaScreen.AddPlan }
                 )
             }
         }
@@ -186,6 +187,23 @@ private fun RemkaApp() {
                 )
             }
         }
+
+        RemkaScreen.AddPlan -> {
+            val selectedVehicle = vehicles.firstOrNull { vehicle -> vehicle.id == selectedVehicleId }
+
+            if (selectedVehicle == null) {
+                screen = RemkaScreen.VehicleList
+            } else {
+                AddPlanScreen(
+                    vehicle = selectedVehicle,
+                    onBack = { screen = RemkaScreen.VehicleDetails },
+                    onSave = { plan ->
+                        plans.add(plan)
+                        screen = RemkaScreen.VehicleDetails
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -193,7 +211,8 @@ private enum class RemkaScreen {
     VehicleList,
     AddVehicle,
     VehicleDetails,
-    AddEvent
+    AddEvent,
+    AddPlan
 }
 
 @Composable
@@ -597,12 +616,158 @@ private fun AddEventScreen(
 }
 
 @Composable
+private fun AddPlanScreen(
+    vehicle: Vehicle,
+    onBack: () -> Unit,
+    onSave: (MaintenancePlan) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var plannedDate by remember { mutableStateOf("2026-07-10") }
+    var reminderDate by remember { mutableStateOf("") }
+    var targetMileage by remember { mutableStateOf("") }
+    var placeToBuy by remember { mutableStateOf("") }
+    var responsiblePerson by remember { mutableStateOf("") }
+    var comment by remember { mutableStateOf("") }
+
+    val canSave = title.isNotBlank() && plannedDate.isNotBlank()
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Новый план",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
+                    )
+                    Text(
+                        text = vehicle.name,
+                        color = Color(0xFF64748B)
+                    )
+                }
+
+                OutlinedButton(onClick = onBack) {
+                    Text("Назад")
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = title,
+                onValueChange = { title = it },
+                label = { Text("Название") },
+                singleLine = true
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = plannedDate,
+                onValueChange = { plannedDate = it },
+                label = { Text("Дата выполнения") },
+                singleLine = true
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = reminderDate,
+                onValueChange = { reminderDate = it },
+                label = { Text("Дата напоминания") },
+                singleLine = true
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = targetMileage,
+                onValueChange = { targetMileage = it.onlyDigits() },
+                label = { Text("Пробег для выполнения") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = placeToBuy,
+                onValueChange = { placeToBuy = it },
+                label = { Text("Где купить") },
+                singleLine = true
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = responsiblePerson,
+                onValueChange = { responsiblePerson = it },
+                label = { Text("Кто отвечает") },
+                singleLine = true
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = comment,
+                onValueChange = { comment = it },
+                label = { Text("Комментарий") },
+                minLines = 3
+            )
+        }
+
+        item {
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = canSave,
+                onClick = {
+                    onSave(
+                        MaintenancePlan(
+                            id = UUID.randomUUID().toString(),
+                            vehicleId = vehicle.id,
+                            title = title.trim(),
+                            plannedDate = plannedDate.trim(),
+                            reminderDate = reminderDate.trim().ifBlank { null },
+                            targetMileage = targetMileage.toLongOrNull(),
+                            placeToBuy = placeToBuy.trim().ifBlank { null },
+                            responsiblePerson = responsiblePerson.trim().ifBlank { null },
+                            comment = comment.trim().ifBlank { null }
+                        )
+                    )
+                }
+            ) {
+                Text("Сохранить")
+            }
+        }
+    }
+}
+
+@Composable
 private fun VehicleDetailsScreen(
     vehicle: Vehicle,
     events: List<VehicleEvent>,
     plans: List<MaintenancePlan>,
     onBack: () -> Unit,
-    onAddEventClick: () -> Unit
+    onAddEventClick: () -> Unit,
+    onAddPlanClick: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -685,7 +850,18 @@ private fun VehicleDetailsScreen(
         }
 
         item {
-            SectionTitle("Планы")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SectionTitle("Планы")
+                Button(onClick = onAddPlanClick) {
+                    Text("Добавить")
+                }
+            }
         }
 
         if (plans.isEmpty()) {

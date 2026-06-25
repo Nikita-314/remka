@@ -1257,10 +1257,10 @@ private fun VehicleListScreen(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Remka",
                     fontSize = 30.sp,
@@ -1286,12 +1286,12 @@ private fun VehicleListScreen(
                     }
 
                     OutlinedButton(onClick = onJournalClick) {
-                        Text("Журнал")
+                        Text("Ж")
                     }
-                }
 
-                Button(onClick = onAddClick) {
-                    Text("+")
+                    Button(onClick = onAddClick) {
+                        Text("+")
+                    }
                 }
             }
         }

@@ -23,3 +23,4 @@ rootProject.name = "remka"
 include(":core")
 include(":console")
 include(":app")
+include(":server")

@@ -67,14 +67,7 @@ class AndroidRemkaStore(
     fun save(snapshot: RemkaSnapshot) {
         file.parentFile?.mkdirs()
         val tempFile = file.resolveSibling("${file.name}.tmp")
-        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
-        val cipherText = cipher.doFinal(json.encodeToString(snapshot).encodeToByteArray())
-        val encryptedPayload = cipher.iv + cipherText
-
-        tempFile.writeText(
-            encryptedPrefix + "\n" + Base64.encodeToString(encryptedPayload, Base64.NO_WRAP)
-        )
+        tempFile.writeText(encryptSnapshot(snapshot))
 
         try {
             Files.move(
@@ -90,6 +83,15 @@ class AndroidRemkaStore(
                 StandardCopyOption.REPLACE_EXISTING
             )
         }
+    }
+
+    fun encryptSnapshot(snapshot: RemkaSnapshot): String {
+        val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
+        val cipherText = cipher.doFinal(json.encodeToString(snapshot).encodeToByteArray())
+        val encryptedPayload = cipher.iv + cipherText
+
+        return encryptedPrefix + "\n" + Base64.encodeToString(encryptedPayload, Base64.NO_WRAP)
     }
 
     private fun getOrCreateSecretKey(): SecretKey {

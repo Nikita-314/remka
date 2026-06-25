@@ -1,6 +1,8 @@
 package com.remka.mobile
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -191,6 +193,15 @@ private fun RemkaApp() {
     val store = remember {
         AndroidRemkaStore(context.filesDir.resolve("remka-data.json"))
     }
+    val syncClient = remember {
+        RemkaSyncClient(
+            baseUrl = BuildConfig.REMKA_SYNC_URL,
+            token = BuildConfig.REMKA_SYNC_TOKEN
+        )
+    }
+    val mainHandler = remember {
+        Handler(Looper.getMainLooper())
+    }
     val initialSnapshot = remember {
         store.load() ?: demoSnapshot()
     }
@@ -237,18 +248,31 @@ private fun RemkaApp() {
     }
     fun saveState() {
         pendingSyncVersion += 1
-        store.save(
-            RemkaSnapshot(
-                vehicles = vehicles.toList(),
-                events = events.toList(),
-                plans = plans.toList(),
-                folders = folders.toList(),
-                currentUser = currentUser,
-                knownUsers = knownUsers.toList(),
-                pendingSyncVersion = pendingSyncVersion,
-                lastSyncedVersion = lastSyncedVersion
-            )
+        val snapshot = RemkaSnapshot(
+            vehicles = vehicles.toList(),
+            events = events.toList(),
+            plans = plans.toList(),
+            folders = folders.toList(),
+            currentUser = currentUser,
+            knownUsers = knownUsers.toList(),
+            pendingSyncVersion = pendingSyncVersion,
+            lastSyncedVersion = lastSyncedVersion
         )
+        store.save(snapshot)
+
+        val accountId = currentUser?.id
+        if (accountId != null && syncClient.isConfigured()) {
+            val encryptedPayload = store.encryptSnapshot(snapshot)
+            val syncVersion = pendingSyncVersion
+            Thread {
+                if (syncClient.uploadEncryptedSnapshot(accountId, encryptedPayload)) {
+                    mainHandler.post {
+                        lastSyncedVersion = syncVersion
+                        store.save(snapshot.copy(lastSyncedVersion = syncVersion))
+                    }
+                }
+            }.start()
+        }
     }
     fun touchVehicle(vehicleId: String) {
         val index = vehicles.indexOfFirst { vehicle -> vehicle.id == vehicleId }

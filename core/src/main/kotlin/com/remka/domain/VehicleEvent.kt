@@ -24,7 +24,9 @@ data class VehicleEvent(
     val cost: Double? = null,
     val shopName: String? = null,
     val comment: String? = null,
-    val participants: List<EventParticipant> = emptyList()
+    val participants: List<EventParticipant> = emptyList(),
+    val createdByUserId: String? = null,
+    val assignments: List<WorkAssignment> = emptyList()
 )
 
 @Serializable

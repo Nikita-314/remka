@@ -7,5 +7,7 @@ data class VehicleFolder(
     val id: String,
     val name: String,
     val createdAt: String = "",
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    val ownerUserId: String? = null,
+    val sharedWith: List<SharedAccess> = emptyList()
 )

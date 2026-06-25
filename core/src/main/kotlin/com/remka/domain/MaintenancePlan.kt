@@ -20,5 +20,7 @@ data class MaintenancePlan(
     val placeToBuy: String? = null,
     val responsiblePerson: String? = null,
     val comment: String? = null,
-    val status: MaintenancePlanStatus = MaintenancePlanStatus.PLANNED
+    val status: MaintenancePlanStatus = MaintenancePlanStatus.PLANNED,
+    val createdByUserId: String? = null,
+    val assignments: List<WorkAssignment> = emptyList()
 )

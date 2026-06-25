@@ -4,6 +4,9 @@ import com.remka.data.RemkaSnapshot
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 class AndroidRemkaStore(
     private val file: File
@@ -28,6 +31,22 @@ class AndroidRemkaStore(
 
     fun save(snapshot: RemkaSnapshot) {
         file.parentFile?.mkdirs()
-        file.writeText(json.encodeToString(snapshot))
+        val tempFile = file.resolveSibling("${file.name}.tmp")
+        tempFile.writeText(json.encodeToString(snapshot))
+
+        try {
+            Files.move(
+                tempFile.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(
+                tempFile.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING
+            )
+        }
     }
 }

@@ -2,6 +2,7 @@ package com.remka.mobile
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -55,6 +56,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -62,11 +64,14 @@ import androidx.compose.ui.unit.sp
 import com.remka.data.RemkaSnapshot
 import com.remka.domain.MaintenancePlan
 import com.remka.domain.MaintenancePlanStatus
+import com.remka.domain.SharedAccess
+import com.remka.domain.UserAccount
 import com.remka.domain.Vehicle
 import com.remka.domain.VehicleEvent
 import com.remka.domain.VehicleEventType
 import com.remka.domain.VehicleFolder
 import com.remka.domain.VehicleType
+import com.remka.domain.WorkAssignment
 import me.saket.swipe.SwipeAction
 import me.saket.swipe.SwipeableActionsBox
 import java.time.LocalDate
@@ -197,6 +202,19 @@ private fun RemkaApp() {
     var pendingDeleteTitle by remember { mutableStateOf<String?>(null) }
     var pendingDeleteText by remember { mutableStateOf<String?>(null) }
     var pendingDeleteAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var currentUser by remember { mutableStateOf(initialSnapshot.currentUser) }
+    var pendingSyncVersion by remember { mutableStateOf(initialSnapshot.pendingSyncVersion) }
+    var lastSyncedVersion by remember { mutableStateOf(initialSnapshot.lastSyncedVersion) }
+    val knownUsers = remember {
+        mutableStateListOf<UserAccount>().apply {
+            addAll(initialSnapshot.knownUsers)
+            initialSnapshot.currentUser?.let { user ->
+                if (none { existingUser -> existingUser.id == user.id }) {
+                    add(user)
+                }
+            }
+        }
+    }
     val vehicles = remember {
         mutableStateListOf<Vehicle>().apply {
             addAll(initialSnapshot.vehicles)
@@ -218,12 +236,17 @@ private fun RemkaApp() {
         }
     }
     fun saveState() {
+        pendingSyncVersion += 1
         store.save(
             RemkaSnapshot(
                 vehicles = vehicles.toList(),
                 events = events.toList(),
                 plans = plans.toList(),
-                folders = folders.toList()
+                folders = folders.toList(),
+                currentUser = currentUser,
+                knownUsers = knownUsers.toList(),
+                pendingSyncVersion = pendingSyncVersion,
+                lastSyncedVersion = lastSyncedVersion
             )
         )
     }
@@ -233,10 +256,87 @@ private fun RemkaApp() {
             vehicles[index] = vehicles[index].copy(updatedAt = todayText())
         }
     }
+    fun isFolderVisible(folder: VehicleFolder): Boolean {
+        val userId = currentUser?.id ?: return true
+        return folder.ownerUserId == null ||
+            folder.ownerUserId == userId ||
+            folder.sharedWith.any { access -> access.userId == userId }
+    }
+    fun isVehicleVisible(vehicle: Vehicle): Boolean {
+        val userId = currentUser?.id ?: return true
+        if (vehicle.hiddenForUserIds.contains(userId)) {
+            return false
+        }
+
+        val folder = folders.firstOrNull { existingFolder -> existingFolder.id == vehicle.folderId }
+
+        return vehicle.ownerUserId == null ||
+            vehicle.ownerUserId == userId ||
+            vehicle.sharedWith.any { access -> access.userId == userId } ||
+            folder?.sharedWith?.any { access -> access.userId == userId } == true ||
+            folder?.ownerUserId == userId
+    }
+    fun rememberUser(userId: String): UserAccount {
+        val normalizedId = userId.trim()
+        val existingUser = knownUsers.firstOrNull { user -> user.id == normalizedId }
+        if (existingUser != null) {
+            return existingUser
+        }
+
+        val newUser = UserAccount(
+            id = normalizedId,
+            email = "$normalizedId@shared.remka.local",
+            displayName = normalizedId
+        )
+        knownUsers.add(newUser)
+        return newUser
+    }
+    fun actorName(userId: String?): String =
+        userId?.let { id ->
+            knownUsers.firstOrNull { user -> user.id == id }?.displayName ?: id
+        } ?: "Без профиля"
     fun requestDelete(title: String, text: String, action: () -> Unit) {
         pendingDeleteTitle = title
         pendingDeleteText = text
         pendingDeleteAction = action
+    }
+    fun navigateBack() {
+        when (screen) {
+            RemkaScreen.VehicleList -> Unit
+            RemkaScreen.Journal,
+            RemkaScreen.AddChoice,
+            RemkaScreen.AddFolder,
+            RemkaScreen.EditFolder,
+            RemkaScreen.FolderDetails,
+            RemkaScreen.AddVehicle,
+            RemkaScreen.EditVehicle,
+            RemkaScreen.Profile,
+            RemkaScreen.ShareFolder -> {
+                screen = RemkaScreen.VehicleList
+            }
+
+            RemkaScreen.VehicleDetails -> {
+                val selectedVehicle = vehicles.firstOrNull { vehicle -> vehicle.id == selectedVehicleId }
+                if (selectedVehicle?.folderId == null) {
+                    screen = RemkaScreen.VehicleList
+                } else {
+                    selectedFolderId = selectedVehicle.folderId
+                    screen = RemkaScreen.FolderDetails
+                }
+            }
+
+            RemkaScreen.AddEvent,
+            RemkaScreen.EditEvent,
+            RemkaScreen.AddPlan,
+            RemkaScreen.EditPlan,
+            RemkaScreen.ShareVehicle -> {
+                screen = RemkaScreen.VehicleDetails
+            }
+        }
+    }
+
+    BackHandler(enabled = screen != RemkaScreen.VehicleList) {
+        navigateBack()
     }
 
     pendingDeleteAction?.let { action ->
@@ -260,15 +360,18 @@ private fun RemkaApp() {
     when (screen) {
         RemkaScreen.VehicleList -> VehicleListScreen(
             vehicles = vehicles
-                .filter { vehicle -> vehicle.folderId == null }
+                .filter { vehicle -> vehicle.folderId == null && isVehicleVisible(vehicle) }
                 .sortedByDescending { vehicle -> vehicle.updatedAt },
             folders = folders.sortedWith(
                 compareByDescending<VehicleFolder> { folder -> folder.isPinned }
                     .thenBy { folder -> folder.name.lowercase() }
-            ),
+            ).filter { folder -> isFolderVisible(folder) },
             folderVehicleCounts = vehicles
+                .filter { vehicle -> isVehicleVisible(vehicle) }
                 .groupingBy { vehicle -> vehicle.folderId }
                 .eachCount(),
+            currentUser = currentUser,
+            onProfileClick = { screen = RemkaScreen.Profile },
             onAddClick = { screen = RemkaScreen.AddChoice },
             onJournalClick = { screen = RemkaScreen.Journal },
             onFolderClick = { folder ->
@@ -278,6 +381,10 @@ private fun RemkaApp() {
             onRenameFolder = { folder ->
                 selectedFolderId = folder.id
                 screen = RemkaScreen.EditFolder
+            },
+            onShareFolder = { folder ->
+                selectedFolderId = folder.id
+                screen = RemkaScreen.ShareFolder
             },
             onDeleteFolder = { folder ->
                 requestDelete(
@@ -306,6 +413,25 @@ private fun RemkaApp() {
             onVehicleClick = { vehicle ->
                 selectedVehicleId = vehicle.id
                 screen = RemkaScreen.VehicleDetails
+            },
+            onEditVehicle = { vehicle ->
+                selectedVehicleId = vehicle.id
+                screen = RemkaScreen.EditVehicle
+            },
+            onShareVehicle = { vehicle ->
+                selectedVehicleId = vehicle.id
+                screen = RemkaScreen.ShareVehicle
+            },
+            onDeleteVehicle = { vehicle ->
+                requestDelete(
+                    title = "Удалить транспорт?",
+                    text = "«${vehicle.name}» и связанные записи будут удалены."
+                ) {
+                    vehicles.removeAll { existingVehicle -> existingVehicle.id == vehicle.id }
+                    events.removeAll { event -> event.vehicleId == vehicle.id }
+                    plans.removeAll { plan -> plan.vehicleId == vehicle.id }
+                    saveState()
+                }
             }
         )
 
@@ -323,7 +449,8 @@ private fun RemkaApp() {
                     VehicleFolder(
                         id = UUID.randomUUID().toString(),
                         name = folderName.trim(),
-                        createdAt = todayText()
+                        createdAt = todayText(),
+                        ownerUserId = currentUser?.id
                     )
                 )
                 saveState()
@@ -361,7 +488,7 @@ private fun RemkaApp() {
                 FolderDetailsScreen(
                     folder = selectedFolder,
                     vehicles = vehicles
-                        .filter { vehicle -> vehicle.folderId == selectedFolder.id }
+                        .filter { vehicle -> vehicle.folderId == selectedFolder.id && isVehicleVisible(vehicle) }
                         .sortedByDescending { vehicle -> vehicle.updatedAt },
                     onBack = { screen = RemkaScreen.VehicleList },
                     onVehicleClick = { vehicle ->
@@ -377,7 +504,12 @@ private fun RemkaApp() {
             folders = folders,
             onBack = { screen = RemkaScreen.VehicleList },
             onSave = { vehicle ->
-                vehicles.add(vehicle.copy(updatedAt = todayText()))
+                vehicles.add(
+                    vehicle.copy(
+                        updatedAt = todayText(),
+                        ownerUserId = currentUser?.id
+                    )
+                )
                 saveState()
                 screen = RemkaScreen.VehicleList
             }
@@ -396,7 +528,12 @@ private fun RemkaApp() {
                     onSave = { vehicle ->
                         val index = vehicles.indexOfFirst { existingVehicle -> existingVehicle.id == vehicle.id }
                         if (index != -1) {
-                            vehicles[index] = vehicle.copy(updatedAt = todayText())
+                            vehicles[index] = vehicle.copy(
+                                updatedAt = todayText(),
+                                ownerUserId = vehicles[index].ownerUserId ?: currentUser?.id,
+                                sharedWith = vehicles[index].sharedWith,
+                                hiddenForUserIds = vehicles[index].hiddenForUserIds
+                            )
                             saveState()
                         }
                         screen = RemkaScreen.VehicleList
@@ -426,6 +563,7 @@ private fun RemkaApp() {
                     onAddEventClick = { screen = RemkaScreen.AddEvent },
                     onAddPlanClick = { screen = RemkaScreen.AddPlan },
                     onEditVehicleClick = { screen = RemkaScreen.EditVehicle },
+                    onShareVehicleClick = { screen = RemkaScreen.ShareVehicle },
                     onDeleteVehicleClick = {
                         requestDelete(
                             title = "Удалить транспорт?",
@@ -439,6 +577,7 @@ private fun RemkaApp() {
                             screen = RemkaScreen.VehicleList
                         }
                     },
+                    actorName = { userId -> actorName(userId) },
                     onEditEventClick = { event ->
                         selectedEventId = event.id
                         screen = RemkaScreen.EditEvent
@@ -490,7 +629,7 @@ private fun RemkaApp() {
                     eventToEdit = null,
                     onBack = { screen = RemkaScreen.VehicleDetails },
                     onSave = { event ->
-                        events.add(event)
+                        events.add(event.copy(createdByUserId = currentUser?.id))
                         touchVehicle(event.vehicleId)
                         saveState()
                         screen = RemkaScreen.VehicleDetails
@@ -513,7 +652,9 @@ private fun RemkaApp() {
                     onSave = { event ->
                         val index = events.indexOfFirst { existingEvent -> existingEvent.id == event.id }
                         if (index != -1) {
-                            events[index] = event
+                            events[index] = event.copy(
+                                createdByUserId = events[index].createdByUserId ?: currentUser?.id
+                            )
                             touchVehicle(event.vehicleId)
                             saveState()
                         }
@@ -534,7 +675,7 @@ private fun RemkaApp() {
                     planToEdit = null,
                     onBack = { screen = RemkaScreen.VehicleDetails },
                     onSave = { plan ->
-                        plans.add(plan)
+                        plans.add(plan.copy(createdByUserId = currentUser?.id))
                         touchVehicle(plan.vehicleId)
                         saveState()
                         screen = RemkaScreen.VehicleDetails
@@ -557,7 +698,9 @@ private fun RemkaApp() {
                     onSave = { plan ->
                         val index = plans.indexOfFirst { existingPlan -> existingPlan.id == plan.id }
                         if (index != -1) {
-                            plans[index] = plan
+                            plans[index] = plan.copy(
+                                createdByUserId = plans[index].createdByUserId ?: currentUser?.id
+                            )
                             touchVehicle(plan.vehicleId)
                             saveState()
                         }
@@ -573,6 +716,128 @@ private fun RemkaApp() {
             plans = plans,
             onBack = { screen = RemkaScreen.VehicleList }
         )
+
+        RemkaScreen.Profile -> ProfileScreen(
+            currentUser = currentUser,
+            onBack = { screen = RemkaScreen.VehicleList },
+            onSignIn = { email ->
+                val user = userAccountFromEmail(email)
+                val existingUser = knownUsers.firstOrNull { existing -> existing.id == user.id }
+                val signedInUser = user.copy(passwordHash = existingUser?.passwordHash)
+                currentUser = signedInUser
+                if (existingUser == null) {
+                    knownUsers.add(signedInUser)
+                }
+                saveState()
+                screen = RemkaScreen.VehicleList
+            },
+            onChangePassword = { password ->
+                currentUser?.let { user ->
+                    val updatedUser = user.copy(passwordHash = passwordFingerprint(password))
+                    currentUser = updatedUser
+                    val index = knownUsers.indexOfFirst { existingUser -> existingUser.id == updatedUser.id }
+                    if (index == -1) {
+                        knownUsers.add(updatedUser)
+                    } else {
+                        knownUsers[index] = updatedUser
+                    }
+                    saveState()
+                }
+            },
+            onSignOut = {
+                currentUser = null
+                saveState()
+                screen = RemkaScreen.VehicleList
+            }
+        )
+
+        RemkaScreen.ShareFolder -> {
+            val folder = folders.firstOrNull { existingFolder -> existingFolder.id == selectedFolderId }
+
+            if (folder == null) {
+                screen = RemkaScreen.VehicleList
+            } else {
+                AccessScreen(
+                    title = "Доступ к папке",
+                    subtitle = folder.name,
+                    sharedWith = folder.sharedWith,
+                    knownUsers = knownUsers,
+                    onBack = { screen = RemkaScreen.VehicleList },
+                    onAddUser = { userId ->
+                        val user = rememberUser(userId)
+                        val index = folders.indexOfFirst { existingFolder -> existingFolder.id == folder.id }
+                        if (index != -1 && folders[index].sharedWith.none { access -> access.userId == user.id }) {
+                            folders[index] = folders[index].copy(
+                                sharedWith = folders[index].sharedWith + SharedAccess(userId = user.id)
+                            )
+                            saveState()
+                        }
+                    },
+                    onRemoveUser = { userId ->
+                        val index = folders.indexOfFirst { existingFolder -> existingFolder.id == folder.id }
+                        if (index != -1) {
+                            folders[index] = folders[index].copy(
+                                sharedWith = folders[index].sharedWith.filterNot { access -> access.userId == userId }
+                            )
+                            saveState()
+                        }
+                    }
+                )
+            }
+        }
+
+        RemkaScreen.ShareVehicle -> {
+            val vehicle = vehicles.firstOrNull { existingVehicle -> existingVehicle.id == selectedVehicleId }
+
+            if (vehicle == null) {
+                screen = RemkaScreen.VehicleList
+            } else {
+                val folderAccess = folders
+                    .firstOrNull { folder -> folder.id == vehicle.folderId }
+                    ?.sharedWith
+                    .orEmpty()
+                val visibleAccess = (vehicle.sharedWith + folderAccess)
+                    .filterNot { access -> vehicle.hiddenForUserIds.contains(access.userId) }
+                    .distinctBy { access -> access.userId }
+
+                AccessScreen(
+                    title = "Доступ к технике",
+                    subtitle = vehicle.name,
+                    sharedWith = visibleAccess,
+                    knownUsers = knownUsers,
+                    onBack = { screen = RemkaScreen.VehicleDetails },
+                    onAddUser = { userId ->
+                        val user = rememberUser(userId)
+                        val index = vehicles.indexOfFirst { existingVehicle -> existingVehicle.id == vehicle.id }
+                        if (index != -1) {
+                            val currentVehicle = vehicles[index]
+                            vehicles[index] = currentVehicle.copy(
+                                sharedWith = if (currentVehicle.sharedWith.any { access -> access.userId == user.id }) {
+                                    currentVehicle.sharedWith
+                                } else {
+                                    currentVehicle.sharedWith + SharedAccess(userId = user.id)
+                                },
+                                hiddenForUserIds = currentVehicle.hiddenForUserIds.filterNot { hiddenUserId -> hiddenUserId == user.id },
+                                updatedAt = todayText()
+                            )
+                            saveState()
+                        }
+                    },
+                    onRemoveUser = { userId ->
+                        val index = vehicles.indexOfFirst { existingVehicle -> existingVehicle.id == vehicle.id }
+                        if (index != -1) {
+                            val currentVehicle = vehicles[index]
+                            vehicles[index] = currentVehicle.copy(
+                                sharedWith = currentVehicle.sharedWith.filterNot { access -> access.userId == userId },
+                                hiddenForUserIds = (currentVehicle.hiddenForUserIds + userId).distinct(),
+                                updatedAt = todayText()
+                            )
+                            saveState()
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -589,7 +854,10 @@ private enum class RemkaScreen {
     AddEvent,
     EditEvent,
     AddPlan,
-    EditPlan
+    EditPlan,
+    Profile,
+    ShareFolder,
+    ShareVehicle
 }
 
 @Composable
@@ -603,11 +871,13 @@ private fun PremiumSwipeActions(
     val startAction = SwipeAction(
         icon = { FishEyeActionLabel(text = startLabel, color = PremiumAccent) },
         background = PremiumAccentSoft,
+        isUndo = true,
         onSwipe = onStartSwipe
     )
     val endAction = SwipeAction(
         icon = { FishEyeActionLabel(text = endLabel, color = PremiumDanger) },
         background = PremiumGoldSoft,
+        isUndo = true,
         onSwipe = onEndSwipe
     )
 
@@ -623,6 +893,8 @@ private fun PremiumSwipeActions(
 private fun FishEyeActionLabel(text: String, color: Color) {
     Box(
         modifier = Modifier
+            .fillMaxSize()
+            .padding(6.dp)
             .graphicsLayer {
                 scaleX = 1.12f
                 scaleY = 1.08f
@@ -671,17 +943,312 @@ private fun ConfirmDeleteDialog(
 }
 
 @Composable
+private fun ProfileScreen(
+    currentUser: UserAccount?,
+    onBack: () -> Unit,
+    onSignIn: (String) -> Unit,
+    onChangePassword: (String) -> Unit,
+    onSignOut: () -> Unit
+) {
+    var email by remember { mutableStateOf(currentUser?.email ?: "") }
+    var newPassword by remember { mutableStateOf("") }
+    var repeatedPassword by remember { mutableStateOf("") }
+    val canSignIn = email.contains("@") && email.substringAfter("@").contains(".")
+    val canChangePassword = currentUser != null &&
+        newPassword.length >= 6 &&
+        newPassword == repeatedPassword
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Профиль",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PremiumInk
+                    )
+                    Text(
+                        text = "Email и ID для совместного доступа",
+                        color = PremiumMuted
+                    )
+                }
+
+                OutlinedButton(onClick = onBack) {
+                    Text("Назад")
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = PremiumCard),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = currentUser?.displayName ?: "Вход не выполнен",
+                        fontWeight = FontWeight.SemiBold,
+                        color = PremiumInk
+                    )
+                    Text(
+                        text = currentUser?.id?.let { accountId -> "ID: $accountId" }
+                            ?: "После входа здесь появится ID, который можно дать другому человеку.",
+                        color = PremiumMuted,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = email,
+                onValueChange = { email = it },
+                label = { Text("Электронная почта") },
+                singleLine = true
+            )
+        }
+
+        item {
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = canSignIn,
+                onClick = { onSignIn(email) }
+            ) {
+                Text(if (currentUser == null) "Войти" else "Обновить профиль")
+            }
+        }
+
+        if (currentUser != null) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = PremiumCard),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Пароль",
+                            fontWeight = FontWeight.SemiBold,
+                            color = PremiumInk
+                        )
+
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = newPassword,
+                            onValueChange = { newPassword = it },
+                            label = { Text("Новый пароль") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+
+                        OutlinedTextField(
+                            modifier = Modifier.fillMaxWidth(),
+                            value = repeatedPassword,
+                            onValueChange = { repeatedPassword = it },
+                            label = { Text("Повторить пароль") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            supportingText = {
+                                if (repeatedPassword.isNotBlank() && newPassword != repeatedPassword) {
+                                    Text("Пароли не совпадают")
+                                }
+                            }
+                        )
+
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = canChangePassword,
+                            onClick = {
+                                onChangePassword(newPassword)
+                                newPassword = ""
+                                repeatedPassword = ""
+                            }
+                        ) {
+                            Text("Поменять пароль")
+                        }
+                    }
+                }
+            }
+
+            item {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onSignOut
+                ) {
+                    Text("Выйти")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccessScreen(
+    title: String,
+    subtitle: String,
+    sharedWith: List<SharedAccess>,
+    knownUsers: List<UserAccount>,
+    onBack: () -> Unit,
+    onAddUser: (String) -> Unit,
+    onRemoveUser: (String) -> Unit
+) {
+    var accountId by remember { mutableStateOf("") }
+    val usersById = knownUsers.associateBy { user -> user.id }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = title,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PremiumInk
+                    )
+                    Text(
+                        text = subtitle,
+                        color = PremiumMuted
+                    )
+                }
+
+                OutlinedButton(onClick = onBack) {
+                    Text("Назад")
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = accountId,
+                onValueChange = { accountId = it },
+                label = { Text("ID аккаунта") },
+                singleLine = true
+            )
+        }
+
+        item {
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = accountId.isNotBlank(),
+                onClick = {
+                    onAddUser(accountId)
+                    accountId = ""
+                }
+            ) {
+                Text("Добавить доступ")
+            }
+        }
+
+        item {
+            SectionTitle("Участники")
+        }
+
+        if (sharedWith.isEmpty()) {
+            item {
+                EmptyText("Доступ пока никому не открыт")
+            }
+        } else {
+            items(sharedWith, key = { access -> access.userId }) { access ->
+                AccessRow(
+                    access = access,
+                    user = usersById[access.userId],
+                    onRemoveClick = { onRemoveUser(access.userId) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccessRow(
+    access: SharedAccess,
+    user: UserAccount?,
+    onRemoveClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = PremiumCard),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = user?.displayName ?: access.userId,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PremiumInk
+                )
+                Text(
+                    text = user?.email ?: "ID: ${access.userId}",
+                    color = PremiumMuted,
+                    fontSize = 13.sp
+                )
+            }
+
+            OutlinedButton(onClick = onRemoveClick) {
+                Text("Убрать")
+            }
+        }
+    }
+}
+
+@Composable
 private fun VehicleListScreen(
     vehicles: List<Vehicle>,
     folders: List<VehicleFolder>,
     folderVehicleCounts: Map<String?, Int>,
+    currentUser: UserAccount?,
+    onProfileClick: () -> Unit,
     onAddClick: () -> Unit,
     onJournalClick: () -> Unit,
     onFolderClick: (VehicleFolder) -> Unit,
     onRenameFolder: (VehicleFolder) -> Unit,
+    onShareFolder: (VehicleFolder) -> Unit,
     onDeleteFolder: (VehicleFolder) -> Unit,
     onTogglePinFolder: (VehicleFolder) -> Unit,
-    onVehicleClick: (Vehicle) -> Unit
+    onVehicleClick: (Vehicle) -> Unit,
+    onEditVehicle: (Vehicle) -> Unit,
+    onShareVehicle: (Vehicle) -> Unit,
+    onDeleteVehicle: (Vehicle) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -710,8 +1277,17 @@ private fun VehicleListScreen(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(onClick = onJournalClick) {
-                    Text("Журнал")
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(onClick = onProfileClick) {
+                        Text(currentUser?.displayName?.take(1)?.uppercase()?.ifBlank { "@" } ?: "@")
+                    }
+
+                    OutlinedButton(onClick = onJournalClick) {
+                        Text("Журнал")
+                    }
                 }
 
                 Button(onClick = onAddClick) {
@@ -731,6 +1307,7 @@ private fun VehicleListScreen(
                     vehicleCount = folderVehicleCounts[folder.id] ?: 0,
                     onClick = { onFolderClick(folder) },
                     onRenameClick = { onRenameFolder(folder) },
+                    onShareClick = { onShareFolder(folder) },
                     onDeleteClick = { onDeleteFolder(folder) },
                     onTogglePinClick = { onTogglePinFolder(folder) }
                 )
@@ -746,10 +1323,13 @@ private fun VehicleListScreen(
                 }
             } else {
                 items(vehicles, key = { vehicle -> vehicle.id }) { vehicle ->
-                    VehicleCard(
+                    VehicleSwipeCard(
                         vehicle = vehicle,
                         folderName = null,
-                        onClick = { onVehicleClick(vehicle) }
+                        onClick = { onVehicleClick(vehicle) },
+                        onEditClick = { onEditVehicle(vehicle) },
+                        onShareClick = { onShareVehicle(vehicle) },
+                        onDeleteClick = { onDeleteVehicle(vehicle) }
                     )
                 }
             }
@@ -960,6 +1540,7 @@ private fun FolderCard(
     vehicleCount: Int,
     onClick: () -> Unit,
     onRenameClick: () -> Unit,
+    onShareClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onTogglePinClick: () -> Unit
 ) {
@@ -1007,59 +1588,66 @@ private fun FolderCard(
                         )
                     }
 
-                    Column(
-                        modifier = Modifier.weight(1f)
-                    ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (folder.isPinned) "${folder.name} *" else folder.name,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = PremiumInk
+                        )
+                        Text(
+                            text = "$vehicleCount ед. техники",
+                            color = PremiumMuted,
+                            fontSize = 13.sp
+                        )
+                    }
+
                     Text(
-                        text = if (folder.isPinned) "${folder.name} *" else folder.name,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = PremiumInk
-                    )
-                    Text(
-                        text = "$vehicleCount ед. техники",
+                        text = "›",
                         color = PremiumMuted,
-                        fontSize = 13.sp
+                        fontSize = 18.sp
                     )
                 }
 
-                Text(
-                    text = "›",
-                    color = PremiumMuted,
-                    fontSize = 18.sp
-                )
-            }
-
-            if (revealedAction == "manage") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            revealedAction = null
-                            onRenameClick()
-                        }
+                if (revealedAction == "manage") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Переименовать")
-                    }
-
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            revealedAction = null
-                            onTogglePinClick()
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                revealedAction = null
+                                onRenameClick()
+                            }
+                        ) {
+                            Text("Имя")
                         }
-                    ) {
-                        Text(if (folder.isPinned) "Открепить" else "Закрепить")
+
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                revealedAction = null
+                                onShareClick()
+                            }
+                        ) {
+                            Text("Доступ")
+                        }
+
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                revealedAction = null
+                                onTogglePinClick()
+                            }
+                        ) {
+                            Text(if (folder.isPinned) "Откр." else "Закр.")
+                        }
                     }
                 }
             }
-
         }
     }
-}
 }
 
 
@@ -1392,7 +1980,7 @@ private fun AddVehicleScreen(
                 value = name,
                 onValueChange = { name = it },
                 label = { Text("Название") },
-                singleLine = true,
+                maxLines = 2,
                 supportingText = {
                     if (!canSave) {
                         Text("Обязательное поле")
@@ -1494,6 +2082,9 @@ private fun AddEventScreen(
     var mileage by remember { mutableStateOf(eventToEdit?.mileage?.toString() ?: "") }
     var cost by remember { mutableStateOf(eventToEdit?.cost?.toString() ?: "") }
     var shopName by remember { mutableStateOf(eventToEdit?.shopName ?: "") }
+    var assignmentsText by remember {
+        mutableStateOf(eventToEdit?.assignments?.toAssignmentText() ?: "")
+    }
     var comment by remember { mutableStateOf(eventToEdit?.comment ?: "") }
     var typeMenuExpanded by remember { mutableStateOf(false) }
 
@@ -1572,7 +2163,7 @@ private fun AddEventScreen(
                 value = title,
                 onValueChange = { title = it },
                 label = { Text("Название") },
-                singleLine = true
+                maxLines = 2
             )
         }
 
@@ -1621,6 +2212,17 @@ private fun AddEventScreen(
         item {
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
+                value = assignmentsText,
+                onValueChange = { assignmentsText = it },
+                label = { Text("Кто что сделал") },
+                supportingText = { Text("Например: alex: заменил сливную пробку") },
+                minLines = 2
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
                 value = comment,
                 onValueChange = { comment = it },
                 label = { Text("Комментарий") },
@@ -1643,7 +2245,8 @@ private fun AddEventScreen(
                             mileage = mileage.toLongOrNull(),
                             cost = cost.replace(',', '.').toDoubleOrNull(),
                             shopName = shopName.trim().ifBlank { null },
-                            comment = comment.trim().ifBlank { null }
+                            comment = comment.trim().ifBlank { null },
+                            assignments = assignmentsText.toAssignments()
                         )
                     )
                 }
@@ -1667,6 +2270,9 @@ private fun AddPlanScreen(
     var targetMileage by remember { mutableStateOf(planToEdit?.targetMileage?.toString() ?: "") }
     var placeToBuy by remember { mutableStateOf(planToEdit?.placeToBuy ?: "") }
     var responsiblePerson by remember { mutableStateOf(planToEdit?.responsiblePerson ?: "") }
+    var assignmentsText by remember {
+        mutableStateOf(planToEdit?.assignments?.toAssignmentText() ?: "")
+    }
     var comment by remember { mutableStateOf(planToEdit?.comment ?: "") }
 
     val canSave = title.isNotBlank() && plannedDate.isNotBlank()
@@ -1709,7 +2315,7 @@ private fun AddPlanScreen(
                 value = title,
                 onValueChange = { title = it },
                 label = { Text("Название") },
-                singleLine = true
+                maxLines = 2
             )
         }
 
@@ -1767,6 +2373,17 @@ private fun AddPlanScreen(
         item {
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
+                value = assignmentsText,
+                onValueChange = { assignmentsText = it },
+                label = { Text("Кто что должен сделать") },
+                supportingText = { Text("Например: alex: купить лампочку") },
+                minLines = 2
+            )
+        }
+
+        item {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
                 value = comment,
                 onValueChange = { comment = it },
                 label = { Text("Комментарий") },
@@ -1790,6 +2407,7 @@ private fun AddPlanScreen(
                             placeToBuy = placeToBuy.trim().ifBlank { null },
                             responsiblePerson = responsiblePerson.trim().ifBlank { null },
                             comment = comment.trim().ifBlank { null },
+                            assignments = assignmentsText.toAssignments(),
                             status = planToEdit?.status ?: MaintenancePlanStatus.PLANNED
                         )
                     )
@@ -1810,7 +2428,9 @@ private fun VehicleDetailsScreen(
     onAddEventClick: () -> Unit,
     onAddPlanClick: () -> Unit,
     onEditVehicleClick: () -> Unit,
+    onShareVehicleClick: () -> Unit,
     onDeleteVehicleClick: () -> Unit,
+    actorName: (String?) -> String,
     onEditEventClick: (VehicleEvent) -> Unit,
     onDeleteEventClick: (VehicleEvent) -> Unit,
     onEditPlanClick: (MaintenancePlan) -> Unit,
@@ -1831,7 +2451,7 @@ private fun VehicleDetailsScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = vehicle.name,
                         fontSize = 28.sp,
@@ -1853,7 +2473,7 @@ private fun VehicleDetailsScreen(
                     }
 
                     OutlinedButton(onClick = onBack) {
-                        Text("Назад")
+                        Text("←")
                     }
                 }
             }
@@ -1861,24 +2481,31 @@ private fun VehicleDetailsScreen(
 
         if (vehicleActionsVisible) {
             item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = onEditVehicleClick
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Изменить")
-                }
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = onEditVehicleClick
+                    ) {
+                        Text("Изменить")
+                    }
 
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = onDeleteVehicleClick
-                ) {
-                    Text("Удалить")
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = onShareVehicleClick
+                    ) {
+                        Text("Доступ")
+                    }
+
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = onDeleteVehicleClick
+                    ) {
+                        Text("Удалить")
+                    }
                 }
-            }
             }
         }
 
@@ -1929,6 +2556,7 @@ private fun VehicleDetailsScreen(
             items(events, key = { event -> event.id }) { event ->
                 EventCard(
                     event = event,
+                    authorName = actorName(event.createdByUserId),
                     onEditClick = { onEditEventClick(event) },
                     onDeleteClick = { onDeleteEventClick(event) }
                 )
@@ -1958,10 +2586,65 @@ private fun VehicleDetailsScreen(
             items(plans, key = { plan -> plan.id }) { plan ->
                 PlanCard(
                     plan = plan,
+                    authorName = actorName(plan.createdByUserId),
                     onEditClick = { onEditPlanClick(plan) },
                     onDeleteClick = { onDeletePlanClick(plan) },
                     onStatusChange = { status -> onPlanStatusChange(plan, status) }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VehicleSwipeCard(
+    vehicle: Vehicle,
+    folderName: String?,
+    onClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onShareClick: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
+    var revealedAction by remember { mutableStateOf<String?>(null) }
+
+    PremiumSwipeActions(
+        startLabel = "Ещё",
+        endLabel = "Удалить",
+        onStartSwipe = { revealedAction = "manage" },
+        onEndSwipe = onDeleteClick
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            VehicleCard(
+                vehicle = vehicle,
+                folderName = folderName,
+                onClick = onClick
+            )
+
+            if (revealedAction == "manage") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            revealedAction = null
+                            onEditClick()
+                        }
+                    ) {
+                        Text("Изменить")
+                    }
+
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            revealedAction = null
+                            onShareClick()
+                        }
+                    ) {
+                        Text("Доступ")
+                    }
+                }
             }
         }
     }
@@ -2037,6 +2720,7 @@ private fun VehicleCard(
 @Composable
 private fun EventCard(
     event: VehicleEvent,
+    authorName: String,
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
@@ -2066,8 +2750,20 @@ private fun EventCard(
                     color = PremiumMuted,
                     fontSize = 13.sp
                 )
+                Text(
+                    text = "Добавил: $authorName",
+                    color = PremiumMuted,
+                    fontSize = 13.sp
+                )
                 DetailLine("Пробег", event.mileage?.let { "$it км" } ?: "не указан")
                 DetailLine("Стоимость", event.cost?.let { "$it" } ?: "не указана")
+                if (event.assignments.isNotEmpty()) {
+                    Text(
+                        text = event.assignments.toAssignmentText(),
+                        color = PremiumInk,
+                        fontSize = 13.sp
+                    )
+                }
                 DetailLine("Комментарий", event.comment ?: "нет")
             }
         }
@@ -2077,6 +2773,7 @@ private fun EventCard(
 @Composable
 private fun PlanCard(
     plan: MaintenancePlan,
+    authorName: String,
     onEditClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onStatusChange: (MaintenancePlanStatus) -> Unit
@@ -2107,8 +2804,20 @@ private fun PlanCard(
                     color = PremiumMuted,
                     fontSize = 13.sp
                 )
+                Text(
+                    text = "Создал: $authorName",
+                    color = PremiumMuted,
+                    fontSize = 13.sp
+                )
                 DetailLine("Напомнить", plan.reminderDate ?: "не задано")
                 DetailLine("Пробег", plan.targetMileage?.let { "$it км" } ?: "не указан")
+                if (plan.assignments.isNotEmpty()) {
+                    Text(
+                        text = plan.assignments.toAssignmentText(),
+                        color = PremiumInk,
+                        fontSize = 13.sp
+                    )
+                }
                 DetailLine("Комментарий", plan.comment ?: "нет")
 
                 if (plan.status == MaintenancePlanStatus.PLANNED) {
@@ -2209,11 +2918,58 @@ private fun MaintenancePlanStatus.displayName(): String =
         MaintenancePlanStatus.CANCELLED -> "Отменён"
     }
 
+private fun userAccountFromEmail(email: String): UserAccount {
+    val normalizedEmail = email.trim().lowercase()
+    val baseId = normalizedEmail.substringBefore("@")
+        .filter { char -> char.isLetterOrDigit() || char == '.' || char == '_' || char == '-' }
+        .ifBlank { "user" }
+    val hash = normalizedEmail.hashCode().toString().replace("-", "m")
+
+    return UserAccount(
+        id = "$baseId-$hash",
+        email = normalizedEmail,
+        displayName = baseId.replaceFirstChar { char -> char.uppercase() }
+    )
+}
+
+private fun passwordFingerprint(password: String): String =
+    password.hashCode().toString().replace("-", "m")
+
+private fun String.toAssignments(): List<WorkAssignment> =
+    lineSequence()
+        .map { line -> line.trim() }
+        .filter { line -> line.isNotBlank() }
+        .map { line ->
+            val parts = line.split(":", limit = 2)
+            if (parts.size == 2) {
+                WorkAssignment(
+                    userId = parts[0].trim(),
+                    description = parts[1].trim()
+                )
+            } else {
+                WorkAssignment(
+                    userId = "unknown",
+                    description = line
+                )
+            }
+        }
+        .filter { assignment -> assignment.description.isNotBlank() }
+        .toList()
+
+private fun List<WorkAssignment>.toAssignmentText(): String =
+    joinToString("\n") { assignment -> "${assignment.userId}: ${assignment.description}" }
+
 private fun demoSnapshot(): RemkaSnapshot {
+    val demoUser = UserAccount(
+        id = "nikita-demo",
+        email = "nikita@example.com",
+        displayName = "Nikita"
+    )
     val rostovFolder = VehicleFolder(
         id = "demo-folder-rostov",
         name = "Ростов",
-        createdAt = "2026-06-24"
+        createdAt = "2026-06-24",
+        ownerUserId = demoUser.id
     )
     val motorcycle = Vehicle(
         id = "demo-motorcycle",
@@ -2225,10 +2981,13 @@ private fun demoSnapshot(): RemkaSnapshot {
         registrationNumber = "A123BC",
         currentMileage = 42000,
         folderId = rostovFolder.id,
-        updatedAt = "2026-06-24"
+        updatedAt = "2026-06-24",
+        ownerUserId = demoUser.id
     )
 
     return RemkaSnapshot(
+        currentUser = demoUser,
+        knownUsers = listOf(demoUser),
         folders = listOf(rostovFolder),
         vehicles = listOf(motorcycle),
         events = listOf(
@@ -2241,7 +3000,11 @@ private fun demoSnapshot(): RemkaSnapshot {
                 mileage = 42010,
                 cost = 8500.0,
                 shopName = "MotoParts",
-                comment = "Позже проверить крепления."
+                comment = "Позже проверить крепления.",
+                createdByUserId = demoUser.id,
+                assignments = listOf(
+                    WorkAssignment(userId = demoUser.id, description = "установил багажник")
+                )
             ),
             VehicleEvent(
                 id = "demo-event-2",
@@ -2252,7 +3015,11 @@ private fun demoSnapshot(): RemkaSnapshot {
                 mileage = 42100,
                 cost = 3200.0,
                 shopName = "Oil Market",
-                comment = "Сливная пробка плохо закручивается."
+                comment = "Сливная пробка плохо закручивается.",
+                createdByUserId = demoUser.id,
+                assignments = listOf(
+                    WorkAssignment(userId = demoUser.id, description = "поменял масло")
+                )
             )
         ),
         plans = listOf(
@@ -2262,7 +3029,11 @@ private fun demoSnapshot(): RemkaSnapshot {
                 title = "Поменять лампочку",
                 plannedDate = "2026-07-10",
                 reminderDate = "2026-07-09",
-                comment = "Перед покупкой проверить тип лампы."
+                comment = "Перед покупкой проверить тип лампы.",
+                createdByUserId = demoUser.id,
+                assignments = listOf(
+                    WorkAssignment(userId = demoUser.id, description = "заменить лампочку")
+                )
             )
         )
     )

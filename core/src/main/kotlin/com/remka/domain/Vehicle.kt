@@ -24,5 +24,8 @@ data class Vehicle(
     val registrationNumber: String? = null,
     val currentMileage: Long? = null,
     val folderId: String? = null,
-    val updatedAt: String = ""
+    val updatedAt: String = "",
+    val ownerUserId: String? = null,
+    val sharedWith: List<SharedAccess> = emptyList(),
+    val hiddenForUserIds: List<String> = emptyList()
 )

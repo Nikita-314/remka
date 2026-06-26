@@ -948,8 +948,8 @@ private fun FishEyeActionLabel(text: String, color: Color) {
             }
             .clip(RoundedCornerShape(8.dp))
             .background(
-                Brush.radialGradient(
-                    colors = listOf(Color.White.copy(alpha = 0.88f), color.copy(alpha = 0.20f))
+                Brush.linearGradient(
+                    colors = listOf(color.copy(alpha = 0.96f), color.copy(alpha = 0.76f))
                 )
             )
             .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -957,7 +957,7 @@ private fun FishEyeActionLabel(text: String, color: Color) {
     ) {
         Text(
             text = text,
-            color = color,
+            color = Color.White,
             fontWeight = FontWeight.SemiBold,
             fontSize = 13.sp
         )
@@ -1254,7 +1254,7 @@ private fun AccessScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -1392,7 +1392,7 @@ private fun VehicleListScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedButton(onClick = onProfileClick) {
-                        Text(currentUser?.displayName?.take(1)?.uppercase()?.ifBlank { "@" } ?: "@")
+                        Text("⚙")
                     }
 
                     OutlinedButton(onClick = onJournalClick) {
@@ -1478,7 +1478,7 @@ private fun AddChoiceScreen(
             }
 
             OutlinedButton(onClick = onBack) {
-                Text("Назад")
+                Text("←")
             }
         }
 
@@ -1563,7 +1563,7 @@ private fun FolderFormScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -1623,7 +1623,7 @@ private fun FolderDetailsScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -1654,11 +1654,50 @@ private fun FolderCard(
     onDeleteClick: () -> Unit,
     onTogglePinClick: () -> Unit
 ) {
-    var revealedAction by remember { mutableStateOf<String?>(null) }
+    var actionsVisible by remember { mutableStateOf(false) }
+    if (actionsVisible) {
+        AlertDialog(
+            onDismissRequest = { actionsVisible = false },
+            title = { Text(folder.name) },
+            text = { Text("Что сделать с папкой?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        actionsVisible = false
+                        onRenameClick()
+                    }
+                ) {
+                    Text("Переименовать")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            actionsVisible = false
+                            onShareClick()
+                        }
+                    ) {
+                        Text("Доступ")
+                    }
+
+                    TextButton(
+                        onClick = {
+                            actionsVisible = false
+                            onTogglePinClick()
+                        }
+                    ) {
+                        Text(if (folder.isPinned) "Открепить" else "Закрепить")
+                    }
+                }
+            }
+        )
+    }
+
     PremiumSwipeActions(
         startLabel = "Ещё",
         endLabel = "Удалить",
-        onStartSwipe = { revealedAction = "manage" },
+        onStartSwipe = { actionsVisible = true },
         onEndSwipe = onDeleteClick
     ) {
         Card(
@@ -1717,43 +1756,6 @@ private fun FolderCard(
                         color = PremiumMuted,
                         fontSize = 18.sp
                     )
-                }
-
-                if (revealedAction == "manage") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                revealedAction = null
-                                onRenameClick()
-                            }
-                        ) {
-                            Text("Имя")
-                        }
-
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                revealedAction = null
-                                onShareClick()
-                            }
-                        ) {
-                            Text("Доступ")
-                        }
-
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = {
-                                revealedAction = null
-                                onTogglePinClick()
-                            }
-                        ) {
-                            Text(if (folder.isPinned) "Откр." else "Закр.")
-                        }
-                    }
                 }
             }
         }
@@ -1831,7 +1833,7 @@ private fun JournalScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -2001,7 +2003,7 @@ private fun AddVehicleScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -2227,7 +2229,7 @@ private fun AddEventScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -2414,7 +2416,7 @@ private fun AddPlanScreen(
                 }
 
                 OutlinedButton(onClick = onBack) {
-                    Text("Назад")
+                    Text("←")
                 }
             }
         }
@@ -2715,48 +2717,46 @@ private fun VehicleSwipeCard(
     onShareClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
-    var revealedAction by remember { mutableStateOf<String?>(null) }
+    var actionsVisible by remember { mutableStateOf(false) }
+    if (actionsVisible) {
+        AlertDialog(
+            onDismissRequest = { actionsVisible = false },
+            title = { Text(vehicle.name) },
+            text = { Text("Что сделать с техникой?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        actionsVisible = false
+                        onEditClick()
+                    }
+                ) {
+                    Text("Изменить")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        actionsVisible = false
+                        onShareClick()
+                    }
+                ) {
+                    Text("Доступ")
+                }
+            }
+        )
+    }
 
     PremiumSwipeActions(
         startLabel = "Ещё",
         endLabel = "Удалить",
-        onStartSwipe = { revealedAction = "manage" },
+        onStartSwipe = { actionsVisible = true },
         onEndSwipe = onDeleteClick
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            VehicleCard(
-                vehicle = vehicle,
-                folderName = folderName,
-                onClick = onClick
-            )
-
-            if (revealedAction == "manage") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            revealedAction = null
-                            onEditClick()
-                        }
-                    ) {
-                        Text("Изменить")
-                    }
-
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            revealedAction = null
-                            onShareClick()
-                        }
-                    ) {
-                        Text("Доступ")
-                    }
-                }
-            }
-        }
+        VehicleCard(
+            vehicle = vehicle,
+            folderName = folderName,
+            onClick = onClick
+        )
     }
 }
 
@@ -3035,11 +3035,17 @@ private fun userAccountFromEmail(email: String, password: String): UserAccount {
         .ifBlank { "user" }
 
     return UserAccount(
-        id = "usr-${UUID.randomUUID().toString().take(8)}",
+        id = sixDigitAccountId(),
         email = normalizedEmail,
         displayName = baseId.replaceFirstChar { char -> char.uppercase() },
         passwordHash = passwordFingerprint(password, normalizedEmail)
     )
+}
+
+private fun sixDigitAccountId(): String {
+    val hash = UUID.randomUUID().hashCode()
+    val positiveHash = if (hash == Int.MIN_VALUE) 0 else kotlin.math.abs(hash)
+    return (100000 + positiveHash % 900000).toString()
 }
 
 private fun String.normalizedEmail(): String =
